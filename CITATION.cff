@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: If you use this package, please cite the paper below.
+title: SU(3) plaquette-oracle circuits
+authors:
+  - family-names: Draper
+    given-names: Patrick
+repository-code: https://github.com/pidraper/magnetic-oracle
+license: MIT
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Draper
+      given-names: Patrick
+  title: Block Encoding Non-Abelian Lattice Gauge Theory
+  year: 2026
+  identifiers:
+    - type: other
+      value: arXiv:2608.17115

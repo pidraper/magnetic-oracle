@@ -1,0 +1,171 @@
+{
+ "active_link_irreps": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5
+ ],
+ "catalog": [
+  {
+   "c2_den": 1,
+   "c2_float": 0.0,
+   "c2_num": 0,
+   "dim": 1,
+   "index": 0,
+   "name": "1",
+   "pq": [
+    0,
+    0
+   ],
+   "theta_float": 0.0,
+   "theta_int38": 0
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 1.3333333333333333,
+   "c2_num": 4,
+   "dim": 3,
+   "index": 1,
+   "name": "3",
+   "pq": [
+    1,
+    0
+   ],
+   "theta_float": 0.6666666666666666,
+   "theta_int38": 29165451758
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 1.3333333333333333,
+   "c2_num": 4,
+   "dim": 3,
+   "index": 2,
+   "name": "3bar",
+   "pq": [
+    0,
+    1
+   ],
+   "theta_float": 0.6666666666666666,
+   "theta_int38": 29165451758
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 3.3333333333333335,
+   "c2_num": 10,
+   "dim": 6,
+   "index": 3,
+   "name": "6",
+   "pq": [
+    2,
+    0
+   ],
+   "theta_float": 1.6666666666666667,
+   "theta_int38": 72913629395
+  },
+  {
+   "c2_den": 1,
+   "c2_float": 3.0,
+   "c2_num": 3,
+   "dim": 8,
+   "index": 4,
+   "name": "8",
+   "pq": [
+    1,
+    1
+   ],
+   "theta_float": 1.5,
+   "theta_int38": 65622266455
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 3.3333333333333335,
+   "c2_num": 10,
+   "dim": 6,
+   "index": 5,
+   "name": "6bar",
+   "pq": [
+    0,
+    2
+   ],
+   "theta_float": 1.6666666666666667,
+   "theta_int38": 72913629395
+  },
+  {
+   "c2_den": 1,
+   "c2_float": 6.0,
+   "c2_num": 6,
+   "dim": 10,
+   "index": 6,
+   "name": "10",
+   "pq": [
+    3,
+    0
+   ],
+   "theta_float": 3.0,
+   "theta_int38": 131244532911
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 5.333333333333333,
+   "c2_num": 16,
+   "dim": 15,
+   "index": 7,
+   "name": "15",
+   "pq": [
+    2,
+    1
+   ],
+   "theta_float": 2.6666666666666665,
+   "theta_int38": 116661807032
+  },
+  {
+   "c2_den": 3,
+   "c2_float": 5.333333333333333,
+   "c2_num": 16,
+   "dim": 15,
+   "index": 8,
+   "name": "15bar",
+   "pq": [
+    1,
+    2
+   ],
+   "theta_float": 2.6666666666666665,
+   "theta_int38": 116661807032
+  },
+  {
+   "c2_den": 1,
+   "c2_float": 6.0,
+   "c2_num": 6,
+   "dim": 10,
+   "index": 9,
+   "name": "10bar",
+   "pq": [
+    0,
+    3
+   ],
+   "theta_float": 3.0,
+   "theta_int38": 131244532911
+  }
+ ],
+ "meta": {
+  "a_lattice": 1.0,
+  "alpha_p": 8.615800858899242,
+  "b_rot": 38,
+  "c2_max_active": 3.3333333333333335,
+  "c2_max_catalog": 6.0,
+  "c_floor": 7.549013944105968,
+  "delta_t_anchor": 1.0,
+  "dim_share_convention": "quarter_power_per_vertex_link",
+  "g": 1.0,
+  "link_bits_min": 3,
+  "link_width_note": "paper bills 3-bit TGT.LNK (tex:1300, VALUE_BITS=13); re-pinned to 3 per PD 2026-08-17 -- H3's original 4 was declared slack, superseded",
+  "n_active": 6,
+  "n_catalog": 10,
+  "n_link_qubits_h3": 3,
+  "tgt_lnk_bits": 3,
+  "theta_convention": "phase codec omega^-a; applied phase e^{-i*theta}",
+  "truncation_note": "B is a per-vertex Casimir cutoff, not a link Casimir cutoff (PD 2026-08-17): at B=6 only catalog indices 0-5 (1, 3, 3bar, 6, 8, 6bar) appear on a link in any physical state; indices 6-9 are catalog padding, never physical link states here"
+ }
+}
