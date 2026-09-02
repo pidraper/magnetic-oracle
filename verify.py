@@ -1,11 +1,54 @@
 """Standalone verifier for the exported OpenQASM 3 U_p streams.
 
-Stdlib-only, runnable without ymcirc or any other dependency installed.
-It does not use a general OpenQASM 3 parser; it accepts exactly the
-narrow statement subset the exporter emits and hard-errors on anything
-else, since a verifier that silently tolerates unrecognized syntax could
-silently skip miscompiled statements.
+How the sparse simulation works
+-------------------------------
+
+A state of n qubits is stored as a dict of (basis state, amplitude)
+pairs, holding only the basis states with nonzero amplitude. These
+circuits keep nearly all of their ~1,100 qubits in definite 0/1 values
+at every step, with superposition confined to a few small registers, so
+the dict stays small: at most a few thousand entries at the widest
+point, versus a hilbert space dimension of 2^1092.
+
+Two main data structures:
+
+  * The operation list. `parse_qasm` turns a circuit's QASM text into a
+    flat Python list `ops` of (name, wires) tuples, one per statement,
+    in circuit order.
+
+  * The state. During replay the state is a dict mapping (key, mask) to
+    a complex amplitude. `key` is a single integer whose bit w is the
+    value of qubit w. Every register is stored this way except the
+    phase-gradient register, which spends the whole circuit in a fixed
+    superposition over all 2^38 of its basis states and would ruin
+    the sparse representation if stored. It is eliminated analytically
+    instead (next paragraph), and `mask` records the one thing about it
+    a branch still needs: which of its wires currently stand
+    X-conjugated on that branch.
+
+`replay` walks the operation list once and transforms the dict at each
+step: x/cx/ccx/swap move keys around, h splits one key into two with
+amplitudes /sqrt(2), and s/sdg and the uncompute's cz multiply
+amplitudes by phases. The phase-gradient state |phi> is an eigenstate
+of addition: adding a into it returns the same state times
+exp(-2*pi*i*a/2^38), and X on every gradient wire flips the sign in the
+exponent. So `add_phi` just multiplies each branch by that phase, with
+a read off the branch's own operand bits and the sign taken from the
+branch's mask. In a correct circuit every X-conjugation is undone before
+the readout, so the mask is zero on every surviving branch and the final
+(key, mask) -> key collapse is trivial.
+
+Amplitudes below 1e-16 are pruned. At the end, the amplitude of any
+chosen basis state is a single dict lookup.
+
+Parsing
+-------
+
+Stdlib-only. It does not use a general OpenQASM 3 parser. It accepts exactly the
+lines appearing in the qasm circuits and errors on anything else. The `re.compile`
+constants below are one precompiled pattern per accepted qasm statement form.
 """
+
 import argparse
 import cmath
 import concurrent.futures
@@ -122,7 +165,9 @@ def _parse_def_block(line_iter, def_name):
     body = []
     for line in line_iter:
         if _RE_DEF_OPEN.match(line):
-            raise VerifyError(f"nested def is not part of the accepted subset: {line!r}")
+            raise VerifyError(
+                f"nested def is not part of the accepted subset: {line!r}"
+            )
         if _RE_IF_OPEN.match(line):
             depth += 1
             continue
@@ -149,10 +194,12 @@ def _parse_add_phi_call(line):
             f"add_phi call has {len(toks)} args, expected {2 * B + (B - 1)}: {line!r}"
         )
     operand = tuple(_q_index(t, line) for t in toks[:B])
-    phi = tuple(_q_index(t, line) for t in toks[B:2 * B])
-    for t in toks[2 * B:]:
+    phi = tuple(_q_index(t, line) for t in toks[B : 2 * B])
+    for t in toks[2 * B :]:
         if not _RE_CAR_ARG.match(t):
-            raise VerifyError(f"add_phi carry argument must be car[...], got {t!r}: {line!r}")
+            raise VerifyError(
+                f"add_phi carry argument must be car[...], got {t!r}: {line!r}"
+            )
     return ("add_phi", (operand, phi))
 
 
@@ -162,7 +209,9 @@ def _parse_gradient_prep_call(line):
         raise VerifyError(f"malformed gradient_prep call: {line!r}")
     toks = [t.strip() for t in m.group(1).split(",")]
     if len(toks) != B:
-        raise VerifyError(f"gradient_prep call has {len(toks)} args, expected {B}: {line!r}")
+        raise VerifyError(
+            f"gradient_prep call has {len(toks)} args, expected {B}: {line!r}"
+        )
     return ("gradient_prep", tuple(_q_index(t, line) for t in toks))
 
 
@@ -177,14 +226,24 @@ def _parse_main_body_statement(line):
         return (m.group(1), (_q_index(m.group(2), line), _q_index(m.group(3), line)))
     m = _RE_GATE3.match(line)
     if m:
-        return (m.group(1), (
-            _q_index(m.group(2), line), _q_index(m.group(3), line), _q_index(m.group(4), line),
-        ))
+        return (
+            m.group(1),
+            (
+                _q_index(m.group(2), line),
+                _q_index(m.group(3), line),
+                _q_index(m.group(4), line),
+            ),
+        )
     m = _RE_CALL3.match(line)
     if m:
-        return (m.group(1), (
-            _q_index(m.group(2), line), _q_index(m.group(3), line), _q_index(m.group(4), line),
-        ))
+        return (
+            m.group(1),
+            (
+                _q_index(m.group(2), line),
+                _q_index(m.group(3), line),
+                _q_index(m.group(4), line),
+            ),
+        )
     if line.startswith("add_phi("):
         return _parse_add_phi_call(line)
     if line.startswith("gradient_prep("):
@@ -229,7 +288,9 @@ def parse_qasm(path):
             body = _parse_def_block(lines, def_name)
             if def_name == "temp_and":
                 if body != [("ccx", ("a", "b", "anc"))]:
-                    raise VerifyError(f"temp_and def body must be exactly one ccx, got {body!r}")
+                    raise VerifyError(
+                        f"temp_and def body must be exactly one ccx, got {body!r}"
+                    )
             elif def_name == "add_phi":
                 add_phi_body = body
             continue
@@ -267,7 +328,8 @@ def _check_no_phi(wires, phi, name):
     if bad:
         raise VerifyError(
             "literal op %r touches phi wire(s) %r directly -- only "
-            "cx(control, phi_target) may touch phi" % (name, bad))
+            "cx(control, phi_target) may touch phi" % (name, bad)
+        )
 
 
 def _apply_x(aug, w):
@@ -305,7 +367,8 @@ def _apply_cx(aug, c, t, phi):
     if c in phi:
         raise VerifyError(
             "cx(%d, %d): phi wire %d used as a CONTROL -- only "
-            "cx(control, phi_target) is a sanctioned phi touch" % (c, t, c))
+            "cx(control, phi_target) is a sanctioned phi touch" % (c, t, c)
+        )
     out = {}
     if t in phi:
         for (k, m), a in aug.items():
@@ -342,11 +405,12 @@ def _apply_ccx(aug, c1, c2, t):
 
 
 def _apply_temp_and(aug, u, v, anc):
-    for (k, _m) in aug:
+    for k, _m in aug:
         if (k >> anc) & 1:
             raise VerifyError(
                 "temp_and(%d,%d,%d): ancilla wire %d is dirty (bit=1) "
-                "before the AND -- dirty-ancilla tripwire" % (u, v, anc, anc))
+                "before the AND -- dirty-ancilla tripwire" % (u, v, anc, anc)
+            )
     return _apply_ccx(aug, u, v, anc)
 
 
@@ -377,21 +441,22 @@ def _apply_unand(aug, a, b_wire, anc, op_index):
 
 
 def _apply_measure(aug, w):
-    for (k, _m) in aug:
+    for k, _m in aug:
         if (k >> w) & 1:
             raise VerifyError(
                 "measure(%d): wire is 1 on some branch -- discarding "
-                "measures must be deterministic zero" % w)
+                "measures must be deterministic zero" % w
+            )
     return aug
 
 
 def _apply_gradient_prep(aug, wires):
-    for (k, _m) in aug:
+    for k, _m in aug:
         for w in wires:
             if (k >> w) & 1:
                 raise VerifyError(
-                    "gradient_prep(%r): wire %d is not |0> before prep"
-                    % (wires, w))
+                    "gradient_prep(%r): wire %d is not |0> before prep" % (wires, w)
+                )
     return aug
 
 
@@ -403,7 +468,7 @@ def _apply_add_phi(aug, operand, phi, b):
     for (k, m), amp in aug.items():
         a = 0
         for idx, w in enumerate(operand):
-            a |= (((k >> w) & 1) << idx)
+            a |= ((k >> w) & 1) << idx
         toggled = [(m >> w) & 1 for w in phi]
         if all(t == 0 for t in toggled):
             sign = -1
@@ -413,7 +478,8 @@ def _apply_add_phi(aug, operand, phi, b):
             raise VerifyError(
                 "add_phi: partial phi-negation mask on some branch -- "
                 "every phi wire must be uniformly toggled or untoggled "
-                "at add time")
+                "at add time"
+            )
         phase = cmath.exp(sign * 2j * cmath.pi * a / mod)
         key = (k, m)
         out[key] = out.get(key, 0j) + amp * phase
@@ -474,7 +540,8 @@ def replay(ops, in_bits, injection, b=38):
                 bit = 1 << slot
                 if any(k & bit for (k, _m) in aug):
                     raise VerifyError(
-                        "injection slot %d not clean at op %d" % (slot, i))
+                        "injection slot %d not clean at op %d" % (slot, i)
+                    )
                 aug = {(k | bit, m): a for (k, m), a in aug.items()}
         name, w = op[0], op[1]
         if name == "barrier":
@@ -542,9 +609,12 @@ def reconstruct_t_lam(edge):
                 raise VerifyError(
                     "reconstruct_t_lam: corner %d disagrees with an "
                     "earlier corner on slot %d (%r vs %r)"
-                    % (c["v"], slot, t_lam[slot], val))
+                    % (c["v"], slot, t_lam[slot], val)
+                )
     if any(x is None for x in t_lam):
-        raise VerifyError("reconstruct_t_lam: %r left a slot unfilled" % (edge["corners"],))
+        raise VerifyError(
+            "reconstruct_t_lam: %r left a slot unfilled" % (edge["corners"],)
+        )
     return t_lam
 
 
@@ -583,7 +653,9 @@ def build_key(values, regmap):
     for c, row in enumerate(ctrl4x4):
         for l, v in enumerate(row):
             if not (0 <= v <= 7):
-                raise VerifyError("build_key: ctrl4x4[%d][%d]=%r outside 0..7" % (c, l, v))
+                raise VerifyError(
+                    "build_key: ctrl4x4[%d][%d]=%r outside 0..7" % (c, l, v)
+                )
     for i, v in enumerate(mult4):
         if not (0 <= v <= 1):
             raise VerifyError("build_key: mult4[%d]=%r outside 0..1" % (i, v))
@@ -694,12 +766,15 @@ def check_zero(circ, regmap, edge, sector, zrec):
     and `check_zero` separately (which would replay twice)."""
     if abs(zrec["h_st"] - edge["h_st"]) >= _ZREC_H_ST_TOL:
         raise VerifyError(
-            "check_zero: zrec[\"h_st\"]=%r does not match edge[\"h_st\"]=%r -- "
-            "zrec is not paired to this edge" % (zrec["h_st"], edge["h_st"]))
+            'check_zero: zrec["h_st"]=%r does not match edge["h_st"]=%r -- '
+            "zrec is not paired to this edge" % (zrec["h_st"], edge["h_st"])
+        )
     in_values = input_values(edge, sector)
     _, ctrl4x4, _ = in_values
     zero_values = (zrec["t_lam"], ctrl4x4, zrec["t_mult"])
-    return check_edges_grouped(circ, regmap, [(in_values, [("zero", zero_values)])])["zero"]
+    return check_edges_grouped(circ, regmap, [(in_values, [("zero", zero_values)])])[
+        "zero"
+    ]
 
 
 # --- classical adder check + CLI -----------------------------------------
@@ -749,24 +824,30 @@ def check_adder(add_phi_body, b=38, n=200, seed=0):
                 if bits[anc] != want:
                     raise VerifyError(
                         "check_adder: trial a=%d p=%d -- unand(%s,%s,%s) "
-                        "ancilla=%d, expected %d" % (a, p, u, v, anc, bits[anc], want))
+                        "ancilla=%d, expected %d" % (a, p, u, v, anc, bits[anc], want)
+                    )
                 bits[anc] = 0
             else:
                 raise VerifyError(
                     "check_adder: add_phi body contains unrecognized gate %r "
-                    "-- outside the proven x/cx/ccx/unand inventory" % (gate,))
+                    "-- outside the proven x/cx/ccx/unand inventory" % (gate,)
+                )
         p_out = sum(bits["p%d" % i] << i for i in range(b))
         a_out = sum(bits["a%d" % i] << i for i in range(b))
         if p_out != (a + p) % mod:
             raise VerifyError(
                 "check_adder: trial a=%d p=%d -- got p'=%d, expected %d"
-                % (a, p, p_out, (a + p) % mod))
+                % (a, p, p_out, (a + p) % mod)
+            )
         if a_out != a:
-            raise VerifyError("check_adder: trial a=%d p=%d -- a changed to %d" % (a, p, a_out))
+            raise VerifyError(
+                "check_adder: trial a=%d p=%d -- a changed to %d" % (a, p, a_out)
+            )
         dirty = [i for i in range(b - 1) if bits["c%d" % i]]
         if dirty:
             raise VerifyError(
-                "check_adder: trial a=%d p=%d -- carries %r left dirty" % (a, p, dirty))
+                "check_adder: trial a=%d p=%d -- carries %r left dirty" % (a, p, dirty)
+            )
     return len(trials)
 
 
@@ -835,9 +916,15 @@ def _build_groups(regmap, zc, dagger, selected):
     rows = []
     for fidx, sector, edge in selected:
         if dagger:
-            in_values, out_values = output_values(edge, sector), input_values(edge, sector)
+            in_values, out_values = (
+                output_values(edge, sector),
+                input_values(edge, sector),
+            )
         else:
-            in_values, out_values = input_values(edge, sector), output_values(edge, sector)
+            in_values, out_values = (
+                input_values(edge, sector),
+                output_values(edge, sector),
+            )
         gkey = build_key(in_values, regmap)
         edge_label = ("edge", fidx)
         groups.setdefault(gkey, (in_values, []))[1].append((edge_label, out_values))
@@ -847,13 +934,21 @@ def _build_groups(regmap, zc, dagger, selected):
             if abs(zrec["h_st"] - edge["h_st"]) >= _ZREC_H_ST_TOL:
                 raise VerifyError(
                     "zero record at fixture index %d is not paired to this edge "
-                    "(zrec h_st=%r, edge h_st=%r)" % (fidx, zrec["h_st"], edge["h_st"]))
+                    "(zrec h_st=%r, edge h_st=%r)" % (fidx, zrec["h_st"], edge["h_st"])
+                )
             _, ctrl4x4, _ = in_values
             zero_values = (zrec["t_lam"], ctrl4x4, zrec["t_mult"])
             zero_label = ("zero", fidx)
             groups[gkey][1].append((zero_label, zero_values))
-        rows.append({"fidx": fidx, "sector": sector["name"], "edge": edge,
-                      "edge_label": edge_label, "zero_label": zero_label})
+        rows.append(
+            {
+                "fidx": fidx,
+                "sector": sector["name"],
+                "edge": edge,
+                "edge_label": edge_label,
+                "zero_label": zero_label,
+            }
+        )
     return groups, rows
 
 
@@ -877,11 +972,13 @@ def _argv_sig(circuits, full, sample):
     checkpoint is only a valid resume point for a run with the same
     signature (order-independent: circuits sorted, sample meaningless
     under --full)."""
-    return sorted([
-        "circuits=" + ",".join(sorted(circuits)),
-        "full=%s" % bool(full),
-        "sample=%s" % (None if full else sample),
-    ])
+    return sorted(
+        [
+            "circuits=" + ",".join(sorted(circuits)),
+            "full=%s" % bool(full),
+            "sample=%s" % (None if full else sample),
+        ]
+    )
 
 
 def _load_checkpoint(path, argv_sig):
@@ -896,7 +993,8 @@ def _load_checkpoint(path, argv_sig):
             "this run's argv_sig=%r) -- resuming would silently overwrite a "
             "possibly multi-hour artifact; delete or move the file, or rerun "
             "with the matching --circuits/--full/--sample flags"
-            % (path, stored_sig, argv_sig))
+            % (path, stored_sig, argv_sig)
+        )
     return payload.get("done", {})
 
 
@@ -909,8 +1007,17 @@ def _save_checkpoint(path, argv_sig, done):
     os.replace(tmp, path)
 
 
-def _replay_groups(circ, regmap, groups, workers, qasm_path,
-                    checkpoint_path, argv_sig, circ_name, checkpoint_done):
+def _replay_groups(
+    circ,
+    regmap,
+    groups,
+    workers,
+    qasm_path,
+    checkpoint_path,
+    argv_sig,
+    circ_name,
+    checkpoint_done,
+):
     """Replays every group in `groups` not already covered by
     `checkpoint_done[circ_name]`, and returns {label: amp} pooled across
     every group (including ones served from the checkpoint). Runs inline
@@ -937,7 +1044,8 @@ def _replay_groups(circ, regmap, groups, workers, qasm_path,
             label_amps[label] = amp
         if checkpoint_path:
             done_for_circuit[str(gkey)] = [
-                [_encode_label(label), amp.real, amp.imag] for label, amp in result.items()
+                [_encode_label(label), amp.real, amp.imag]
+                for label, amp in result.items()
             ]
             _save_checkpoint(checkpoint_path, argv_sig, checkpoint_done)
 
@@ -946,10 +1054,12 @@ def _replay_groups(circ, regmap, groups, workers, qasm_path,
             _record(gkey, check_edges_grouped(circ, regmap, [(in_values, targets)]))
     elif pending:
         with concurrent.futures.ProcessPoolExecutor(
-                max_workers=workers, initializer=_worker_init,
-                initargs=(qasm_path, regmap)) as ex:
-            futures = {ex.submit(_worker_replay_group, (in_values, targets)): gkey
-                       for gkey, in_values, targets in pending}
+            max_workers=workers, initializer=_worker_init, initargs=(qasm_path, regmap)
+        ) as ex:
+            futures = {
+                ex.submit(_worker_replay_group, (in_values, targets)): gkey
+                for gkey, in_values, targets in pending
+            }
             for fut in concurrent.futures.as_completed(futures):
                 _record(futures[fut], fut.result())
     return label_amps
@@ -957,14 +1067,25 @@ def _replay_groups(circ, regmap, groups, workers, qasm_path,
 
 def _build_argparser():
     p = argparse.ArgumentParser(
-        description="Verify the shipped OpenQASM 3 U_p streams against classical ground truth.")
-    p.add_argument("--circuits", default=",".join(_ALL_CIRCUITS),
-                    help="comma-separated circuit names (default: all six)")
-    p.add_argument("--sample", type=int, default=None,
-                    help="check the N cheapest edges per circuit (default 8)")
+        description="Verify the shipped OpenQASM 3 U_p streams against classical ground truth."
+    )
+    p.add_argument(
+        "--circuits",
+        default=",".join(_ALL_CIRCUITS),
+        help="comma-separated circuit names (default: all six)",
+    )
+    p.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="check the N cheapest edges per circuit (default 8)",
+    )
     p.add_argument("--full", action="store_true", help="check every edge")
-    p.add_argument("--adder-only", action="store_true",
-                    help="run only the classical adder check, no edge replays")
+    p.add_argument(
+        "--adder-only",
+        action="store_true",
+        help="run only the classical adder check, no edge replays",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--checkpoint", help="JSON path for resumable progress")
     p.add_argument("--workers", type=int, default=os.cpu_count())
@@ -1046,9 +1167,11 @@ def main(argv=None):
             # collected before the error.
             try:
                 dagger = name.startswith("up_dag_")
-                plane = name[len("up_dag_"):] if dagger else name[len("up_"):]
+                plane = name[len("up_dag_") :] if dagger else name[len("up_") :]
                 regmap = maps[name]
-                fx = load_fixture(os.path.join(data_dir, "b6_compose_sectors_%s.json" % plane))
+                fx = load_fixture(
+                    os.path.join(data_dir, "b6_compose_sectors_%s.json" % plane)
+                )
                 zc = None
                 if not dagger:
                     with open(os.path.join(data_dir, "zero_checks_b6.json")) as f:
@@ -1058,8 +1181,16 @@ def main(argv=None):
                 selected = ordered if args.full else ordered[:sample]
                 groups, rows = _build_groups(regmap, zc, dagger, selected)
                 label_amps = _replay_groups(
-                    circ, regmap, groups, args.workers, qasm_path,
-                    args.checkpoint, argv_sig, name, checkpoint_done)
+                    circ,
+                    regmap,
+                    groups,
+                    args.workers,
+                    qasm_path,
+                    args.checkpoint,
+                    argv_sig,
+                    name,
+                    checkpoint_done,
+                )
 
                 for row in rows:
                     edge = row["edge"]
@@ -1078,18 +1209,35 @@ def main(argv=None):
                     edge_ok = delta < 1e-9 and zero_ok
                     circuit_ok = circuit_ok and edge_ok
                     n_edges += 1
-                    print("  %s sector=%s edge=%d delta=%.3e zero=%s %s"
-                          % (name, row["sector"], row["fidx"], delta, zero_str,
-                             "PASS" if edge_ok else "FAIL"))
+                    print(
+                        "  %s sector=%s edge=%d delta=%.3e zero=%s %s"
+                        % (
+                            name,
+                            row["sector"],
+                            row["fidx"],
+                            delta,
+                            zero_str,
+                            "PASS" if edge_ok else "FAIL",
+                        )
+                    )
             except VerifyError as exc:
                 circuit_ok = False
                 print("[%s] FAILED -- edge replay: %s" % (name, exc))
 
         if maps is not None:
             adder_field = str(trials) if trials is not None else "FAILED"
-            print("[%s] summary: n_edges=%d max_delta=%.3e zero=%d/%d adder_trials=%s -- %s"
-                  % (name, n_edges, max_delta, n_zero_pass, n_zero, adder_field,
-                     "PASS" if circuit_ok else "FAIL"))
+            print(
+                "[%s] summary: n_edges=%d max_delta=%.3e zero=%d/%d adder_trials=%s -- %s"
+                % (
+                    name,
+                    n_edges,
+                    max_delta,
+                    n_zero_pass,
+                    n_zero,
+                    adder_field,
+                    "PASS" if circuit_ok else "FAIL",
+                )
+            )
         overall_ok = overall_ok and circuit_ok
 
     print("RESULT: %s" % ("PASS" if overall_ok else "FAIL"))
